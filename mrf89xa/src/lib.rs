@@ -108,7 +108,7 @@ where
     }
 
     /// Initialise module with decent defaults
-    pub fn init(&mut self, delay: &mut dyn DelayNs) -> Result<(), config::Mrf89Error> {
+    pub fn init(&mut self, delay: &mut dyn DelayNs) -> Result<(), config::Mrf89Error<SPI::Error>> {
         // TODO MRF89 data cant handle SPI greater than 1MHz. verify that?
 
         // TODO: find register to verify device is a MRF89 series?
@@ -238,7 +238,7 @@ where
     fn set_modem_config(
         &mut self,
         preset: &modem_config::ModemConfigChoice,
-    ) -> Result<(), config::Mrf89Error> {
+    ) -> Result<(), config::Mrf89Error<SPI::Error>> {
         let cfg_map: LinearMap<ModemConfigChoice, ModemConfig, 16> = [
             (
                 ModemConfigChoice::FSK_Rb2Fd33,
@@ -304,7 +304,7 @@ where
         }
     }
 
-    fn set_op_mode(&mut self, op_mode: reg::CMOD) -> Result<(), Mrf89Error> {
+    fn set_op_mode(&mut self, op_mode: reg::CMOD) -> Result<(), Mrf89Error<SPI::Error>> {
         // REVISIT: do we need to have time delays when switching between modes?
         let val = self.read_reg(reg::Register::GCONREG)?;
         let cr = reg::Gconreg::from_bytes([val]).with_cmod(op_mode);
@@ -317,7 +317,7 @@ where
         frequency: u32,
         mod_type: &reg::ModulationType,
         delay: &mut dyn DelayNs,
-    ) -> Result<(), Mrf89Error> {
+    ) -> Result<(), Mrf89Error<SPI::Error>> {
         let r: u8;
         let p: u8;
         let s: u8;
@@ -347,7 +347,7 @@ where
 
     /// Verify PLL-lock per instructions in Note 1 section 3.12 "Initialization"
     /// Need to do this after changing frequency.
-    fn verify_pll_lock(&mut self, delay: &mut dyn DelayNs) -> Result<(), Mrf89Error> {
+    fn verify_pll_lock(&mut self, delay: &mut dyn DelayNs) -> Result<(), Mrf89Error<SPI::Error>> {
         let val = self.read_reg(reg::Register::FTPRIREG)?;
         let ftpri = reg::Ftprireg::from_bytes([val]).with_lstspll(true); // clear PLL lock bit by writing true
         self.write_reg(reg::Register::FTPRIREG, ftpri.into_bytes()[0])?;
@@ -383,26 +383,26 @@ where
         0
     }
 
-    fn write_reg(&mut self, reg: Register, value: u8) -> Result<(), Mrf89Error> {
+    fn write_reg(&mut self, reg: Register, value: u8) -> Result<(), Mrf89Error<SPI::Error>> {
         let reg = reg.addr();
         let bytes = [((reg & 0x1f) << 1), value];
         self.spi
             .write(&bytes)
-            .map_err(|_| Mrf89Error::SpiTransferError)
+            .map_err(|e| Mrf89Error::SpiTransferError(e))
     }
 
-    fn read_reg(&mut self, reg: Register) -> Result<u8, Mrf89Error> {
+    fn read_reg(&mut self, reg: Register) -> Result<u8, Mrf89Error<SPI::Error>> {
         let reg = reg.addr();
         // send register with read mask, and a 0 after to read
         let mut bytes = [((reg & 0x1f) << 1) | SPI_READ, 0];
         self.spi
             .transfer_in_place(&mut bytes)
-            .map_err(|_| Mrf89Error::SpiTransferError)?;
+            .map_err(|e| Mrf89Error::SpiTransferError(e))?;
 
         Ok(bytes[1])
     }
 
-    fn set_sync_words(&mut self, sync_words: &[u8]) -> Result<(), Mrf89Error> {
+    fn set_sync_words(&mut self, sync_words: &[u8]) -> Result<(), Mrf89Error<SPI::Error>> {
         let len = sync_words.len();
         if len > 4 {
             return Err(Mrf89Error::SyncWordTooLong);
@@ -422,7 +422,11 @@ where
         Ok(())
     }
 
-    pub fn send(&mut self, data: &[u8], _delay: &mut dyn DelayNs) -> Result<(), Mrf89Error> {
+    pub fn send(
+        &mut self,
+        data: &[u8],
+        _delay: &mut dyn DelayNs,
+    ) -> Result<(), Mrf89Error<SPI::Error>> {
         let len = data.len() as u8;
         if len > config::MRF89_MAX_MSG_LEN {
             return Err(Mrf89Error::MsgTooLong);
@@ -454,7 +458,7 @@ where
         Ok(())
     }
 
-    pub fn recv(&mut self, buf: &mut heapless::Vec<u8, 64>) -> Result<(), Mrf89Error> {
+    pub fn recv(&mut self, buf: &mut heapless::Vec<u8, 64>) -> Result<(), Mrf89Error<SPI::Error>> {
         let mut had_err = false;
         if self.buf.len() < MRF89_HEADER_LEN as usize {
             return Err(Mrf89Error::MsgTooShort);
@@ -478,7 +482,7 @@ where
     /// checks if there is a message available
     /// not available when in Tx mode of course
     /// not available when the rx-buf is not yet valid
-    pub fn available(&mut self) -> Result<bool, Mrf89Error> {
+    pub fn available(&mut self) -> Result<bool, Mrf89Error<SPI::Error>> {
         if self.mode == OpMode::Tx {
             return Ok(false);
         }
@@ -492,17 +496,17 @@ where
     }
 
     /// spiWriteData
-    fn write_data(&mut self, data: &[u8]) -> Result<(), Mrf89Error> {
+    fn write_data(&mut self, data: &[u8]) -> Result<(), Mrf89Error<SPI::Error>> {
         // TODO: implement proper FCRCREG
         let acfcrc = 0x80; // Autoclear FIfO crc bit
         self.write_reg(reg::Register::FCRCREG, acfcrc)?;
 
-        let mut result = Err(Mrf89Error::SpiTransferError);
+        let mut result = Ok(());
         critical_section::with(|_crit_sec| {
             self.cs_data.set_low().ok();
             result = match self.spi.write(data) {
                 Ok(_) => Ok(()),
-                Err(_) => Err(Mrf89Error::SpiTransferError),
+                Err(e) => Err(Mrf89Error::SpiTransferError(e)),
             };
             self.cs_data.set_high().ok();
         });
@@ -510,19 +514,19 @@ where
     }
 
     /// spiReadData
-    fn read_data(&mut self) -> Result<u8, Mrf89Error> {
+    fn read_data(&mut self) -> Result<u8, Mrf89Error<SPI::Error>> {
         // TODO: implement proper FCRCREG
         let acfcrc = 0x80u8; // Autoclear FIfO crc bit
         let frwaxs = 0x40u8; // ?
         self.write_reg(reg::Register::FCRCREG, acfcrc | frwaxs)?; // read from FIFO
 
         let mut bytes = [0u8];
-        let mut result = Err(Mrf89Error::SpiTransferError);
+        let mut result = Err(Mrf89Error::BufWriteFailed);
         critical_section::with(|_crit_sec| {
             self.cs_data.set_low().ok();
             result = match self.spi.transfer_in_place(&mut bytes) {
                 Ok(_) => Ok(bytes[0]),
-                Err(_) => Err(Mrf89Error::SpiTransferError),
+                Err(e) => Err(Mrf89Error::SpiTransferError(e)),
             };
             self.cs_data.set_high().ok();
         });
@@ -536,7 +540,7 @@ where
     }
 
     /// Wait until available or timeout
-    pub fn wait_available_timeout(&mut self, timeout: u16) -> Result<bool, Mrf89Error> {
+    pub fn wait_available_timeout(&mut self, timeout: u16) -> Result<bool, Mrf89Error<SPI::Error>> {
         self.set_mode_rx()?;
         if timeout == 0 {
             return Ok(false);
@@ -545,7 +549,7 @@ where
         Ok(true)
     }
 
-    fn set_mode_idle(&mut self) -> Result<(), Mrf89Error> {
+    fn set_mode_idle(&mut self) -> Result<(), Mrf89Error<SPI::Error>> {
         info!("enable idle mode");
         if self.mode != OpMode::Idle {
             self.set_op_mode(reg::CMOD::STANDBY)?;
@@ -554,7 +558,7 @@ where
         Ok(())
     }
 
-    fn set_mode_tx(&mut self) -> Result<(), Mrf89Error> {
+    fn set_mode_tx(&mut self) -> Result<(), Mrf89Error<SPI::Error>> {
         info!("enable tx mode");
         if self.mode != OpMode::Tx {
             self.set_op_mode(reg::CMOD::TRANSMIT)?;
@@ -563,7 +567,7 @@ where
         Ok(())
     }
 
-    fn set_mode_rx(&mut self) -> Result<(), Mrf89Error> {
+    fn set_mode_rx(&mut self) -> Result<(), Mrf89Error<SPI::Error>> {
         info!("enable rx mode");
         if self.mode != OpMode::Rx {
             self.set_op_mode(reg::CMOD::RECEIVE)?;
@@ -573,7 +577,7 @@ where
     }
 
     #[allow(dead_code)]
-    fn set_mode_sleep(&mut self) -> Result<(), Mrf89Error> {
+    fn set_mode_sleep(&mut self) -> Result<(), Mrf89Error<SPI::Error>> {
         if self.mode != OpMode::Sleep {
             self.set_op_mode(reg::CMOD::SLEEP)?;
             self.mode = OpMode::Sleep;
@@ -594,7 +598,7 @@ where
     /// Only one of the several interrupt lines (IRQ1) from the RFM95 needs to be
     /// connnected to the processor.
     /// We use this to get CRCOK and TXDONE  interrupts
-    pub fn handle_interrupt(&mut self, event: Event) -> Result<(), Mrf89Error> {
+    pub fn handle_interrupt(&mut self, event: Event) -> Result<(), Mrf89Error<SPI::Error>> {
         match event {
             Event::Interrupt => {
                 info!("some irq cam in");

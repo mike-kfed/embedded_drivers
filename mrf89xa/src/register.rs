@@ -4,7 +4,7 @@
 #![allow(non_camel_case_types, dead_code, clippy::upper_case_acronyms)]
 use modular_bitfield::prelude::*;
 
-use crate::config::Mrf89Error;
+use crate::config::Mrf89RegisterError;
 
 #[allow(dead_code)]
 #[repr(u8)]
@@ -122,13 +122,13 @@ pub enum FBS {
 }
 
 impl FBS {
-    pub fn from_frequency(frequency: u32) -> Result<Self, Mrf89Error> {
+    pub fn from_frequency(frequency: u32) -> Result<Self, Mrf89RegisterError> {
         match frequency {
             863_000..=870_000 => Ok(Self::FBS_863_870_OR_950_960),
             950_000..=960_000 => Ok(Self::FBS_863_870_OR_950_960),
             915_000..=928_000 => Ok(Self::FBS_915_928),
             902_000..=914_999 => Ok(Self::FBS_902_915),
-            _ => Err(Mrf89Error::FrequencyNotAvailable),
+            _ => Err(Mrf89RegisterError::FrequencyNotAvailable),
         }
     }
 }
@@ -408,11 +408,11 @@ pub enum TransmitOutputPower {
 
 impl Txconreg {
     /// cut off frequency in kHz
-    pub fn compute_txipolfv(frequency: u32) -> Result<u8, Mrf89Error> {
+    pub fn compute_txipolfv(frequency: u32) -> Result<u8, Mrf89RegisterError> {
         let txipolfv = (frequency * 1000 / 200 / (crate::config::XTAL_FREQ / 12800) * 8) / 1000 - 1;
         // Make sure it is max 4 bit
         if txipolfv as u8 > 15u8 {
-            return Err(Mrf89Error::CutOffFreqTooHigh(frequency));
+            return Err(Mrf89RegisterError::CutOffFreqTooHigh(frequency));
         }
         Ok(txipolfv as u8)
     }

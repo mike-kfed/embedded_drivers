@@ -1,8 +1,8 @@
 //! Configuration of Modem
 #![allow(non_camel_case_types)]
 
-#[derive(core::fmt::Debug, ufmt::derive::uDebug, defmt::Format)]
-pub enum Mrf89Error {
+#[derive(Copy, Clone, core::fmt::Debug, ufmt::derive::uDebug, defmt::Format)]
+pub enum Mrf89Error<SPI> {
     DeviceNotFound(u8),
     FrequencyNotAvailable,
     PresetNotImplemented,
@@ -10,7 +10,7 @@ pub enum Mrf89Error {
     SyncWordTooLong,
     CutOffFreqTooHigh(u32),
     ChannelActive,
-    SpiTransferError,
+    SpiTransferError(SPI),
     MsgTooLong,
     MsgTooShort,
     MsgNotForUs,
@@ -19,6 +19,21 @@ pub enum Mrf89Error {
     BufLenZero,
     NoPllLock,
     NotImplemented,
+}
+
+#[derive(Copy, Clone, core::fmt::Debug, ufmt::derive::uDebug, defmt::Format)]
+pub enum Mrf89RegisterError {
+    FrequencyNotAvailable,
+    CutOffFreqTooHigh(u32),
+}
+
+impl<SPI> From<Mrf89RegisterError> for Mrf89Error<SPI> {
+    fn from(value: Mrf89RegisterError) -> Self {
+        match value {
+            Mrf89RegisterError::FrequencyNotAvailable => Mrf89Error::FrequencyNotAvailable,
+            Mrf89RegisterError::CutOffFreqTooHigh(f) => Mrf89Error::CutOffFreqTooHigh(f),
+        }
+    }
 }
 
 /// MRF89XA Crystal Frequency in kHz
