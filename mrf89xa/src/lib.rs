@@ -2,9 +2,9 @@
 
 #![no_std]
 
-use embedded_hal::blocking::delay::DelayMs;
-use embedded_hal::blocking::spi;
-use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::delay::DelayNs;
+use embedded_hal::digital::OutputPin;
+use embedded_hal::spi;
 
 use heapless::LinearMap;
 
@@ -51,11 +51,9 @@ enum OpMode {
     Rx,
 }
 
-pub struct Mrf89xa<SPI, CS, CSDATA> {
+pub struct Mrf89xa<SPI, CSDATA> {
     /// SPI pins to communicate with MRF89XA
     spi: SPI,
-    /// ChipSelect Pin for sending Commands over SPI to the MRF89XA
-    cs: CS,
     /// ChipSelect Pin for sending Data over SPI to the MRF89XA
     cs_data: CSDATA,
     /// currently active transport operating mode
@@ -80,23 +78,21 @@ pub struct Mrf89xa<SPI, CS, CSDATA> {
     promiscuous: bool,
 }
 
-impl<SPI, CS, CSDATA, E, PinError> Mrf89xa<SPI, CS, CSDATA>
+impl<SPI, CSDATA, E, PinError> Mrf89xa<SPI, CSDATA>
 where
-    SPI: spi::Transfer<u8, Error = E> + spi::Write<u8, Error = E>,
-    CS: OutputPin<Error = PinError>,
+    SPI: spi::SpiDevice<Error = E>,
     CSDATA: OutputPin<Error = PinError>,
 {
     /// Creates a new driver from a SPI peripheral with
     /// default configuration.
-    pub fn default(spi: SPI, cs: CS, cs_data: CSDATA) -> Result<Self, E> {
-        Self::new(spi, cs, cs_data, Config::new())
+    pub fn default(spi: SPI, cs_data: CSDATA) -> Result<Self, E> {
+        Self::new(spi, cs_data, Config::new())
     }
 
     /// Takes a config object to initialize the driver
-    pub fn new(spi: SPI, cs: CS, cs_data: CSDATA, config: Config) -> Result<Self, E> {
+    pub fn new(spi: SPI, cs_data: CSDATA, config: Config) -> Result<Self, E> {
         Ok(Self {
             spi,
-            cs,
             cs_data,
             mode: OpMode::Initialising,
             config,
@@ -112,7 +108,7 @@ where
     }
 
     /// Initialise module with decent defaults
-    pub fn init(&mut self, delay: &mut dyn DelayMs<u16>) -> Result<(), config::Mrf89Error> {
+    pub fn init(&mut self, delay: &mut dyn DelayNs) -> Result<(), config::Mrf89Error> {
         // TODO MRF89 data cant handle SPI greater than 1MHz. verify that?
 
         // TODO: find register to verify device is a MRF89 series?
@@ -124,23 +120,22 @@ where
         }
         */
         // Initialise the chip select pins
-        self.cs.set_high().ok();
         self.cs_data.set_high().ok();
 
         // Make sure we are not in some unexpected mode from a previous run
-        self.set_op_mode(reg::CMOD::STANDBY);
+        self.set_op_mode(reg::CMOD::STANDBY)?;
 
         // No way to check the device type but lets trivially check there is something there
         // by trying to change a register:
-        self.write_reg(reg::Register::FDEVREG, 0xac);
-        self.write_reg(reg::Register::FDEVREG, 0xac);
-        self.write_reg(reg::Register::FDEVREG, 0xac);
-        self.write_reg(reg::Register::FDEVREG, 0xac);
+        self.write_reg(reg::Register::FDEVREG, 0xac)?;
+        self.write_reg(reg::Register::FDEVREG, 0xac)?;
+        self.write_reg(reg::Register::FDEVREG, 0xac)?;
+        self.write_reg(reg::Register::FDEVREG, 0xac)?;
         let v = self.read_reg(reg::Register::FDEVREG)?;
         if v != 0xac {
             return Err(config::Mrf89Error::DeviceNotFound(v));
         }
-        self.write_reg(reg::Register::FDEVREG, 0x03); // back to default
+        self.write_reg(reg::Register::FDEVREG, 0x03)?; // back to default
         if self.read_reg(reg::Register::FDEVREG)? != 0x03 {
             return Err(config::Mrf89Error::DeviceNotFound(0));
         }
@@ -154,25 +149,25 @@ where
         let cr = reg::Gconreg::new()
             .with_cmod(reg::CMOD::STANDBY)
             .with_fbs(reg::FBS::FBS_902_915)
-            .with_vcot(reg::VCOT::VCOT_60MV);
-        self.write_reg(reg::Register::GCONREG, cr.into_bytes()[0]);
+            .with_vcot(reg::VCOT::V_60MV);
+        self.write_reg(reg::Register::GCONREG, cr.into_bytes()[0])?;
         // FSK, Packet mode, LNA 0dB
         let cr = reg::Dmodreg::new()
             .with_modsel(reg::ModulationType::FSK)
             .with_data_operation_mode(reg::DataOperationMode::Packet);
-        self.write_reg(reg::Register::DMODREG, cr.into_bytes()[0]);
-        self.write_reg(reg::Register::FDEVREG, 0); // done by set_modem_config
-        self.write_reg(reg::Register::BRSREG, 0); // done by set_modem_config
-        self.write_reg(reg::Register::FLTHREG, 0); // done by set_modem_config (OOK only)
+        self.write_reg(reg::Register::DMODREG, cr.into_bytes()[0])?;
+        self.write_reg(reg::Register::FDEVREG, 0)?; // done by set_modem_config
+        self.write_reg(reg::Register::BRSREG, 0)?; // done by set_modem_config
+        self.write_reg(reg::Register::FLTHREG, 0)?; // done by set_modem_config (OOK only)
         let cr = reg::Fifocreg::new().with_fsize(reg::FifoSize::fsize_64_bytes);
-        self.write_reg(reg::Register::FIFOCREG, cr.into_bytes()[0]);
-        self.write_reg(reg::Register::R1CREG, 0); // done by set_frequency
-        self.write_reg(reg::Register::P1CREG, 0); // done by set_frequency
-        self.write_reg(reg::Register::S1CREG, 0); // done by set_frequency
-        self.write_reg(reg::Register::R2CREG, 0); // Frequency set 2 not used
-        self.write_reg(reg::Register::P2CREG, 0); // Frequency set 2 not used
-        self.write_reg(reg::Register::S2CREG, 0); // Frequency set 2 not used
-        self.write_reg(reg::Register::PACREG, reg::PACREG::PARC_23 as u8);
+        self.write_reg(reg::Register::FIFOCREG, cr.into_bytes()[0])?;
+        self.write_reg(reg::Register::R1CREG, 0)?; // done by set_frequency
+        self.write_reg(reg::Register::P1CREG, 0)?; // done by set_frequency
+        self.write_reg(reg::Register::S1CREG, 0)?; // done by set_frequency
+        self.write_reg(reg::Register::R2CREG, 0)?; // Frequency set 2 not used
+        self.write_reg(reg::Register::P2CREG, 0)?; // Frequency set 2 not used
+        self.write_reg(reg::Register::S2CREG, 0)?; // Frequency set 2 not used
+        self.write_reg(reg::Register::PACREG, reg::PACREG::PARC_23 as u8)?;
         // IRQ0 rx mode: SYNC (not used)
         // IRQ1 rx mode: CRCOK
         // IRQ1 tx mode: TXDONE
@@ -180,41 +175,41 @@ where
             .with_irq0rxs(reg::ReceiveStandby0::sync_sync_adrsmatch)
             .with_irq1rxs(reg::ReceiveStandby1::dclk_undef_crcok)
             .with_irq1tx(true);
-        self.write_reg(reg::Register::FTXRXIREG, ftxrxi.into_bytes()[0]);
+        self.write_reg(reg::Register::FTXRXIREG, ftxrxi.into_bytes()[0])?;
 
         let ftpri = reg::Ftprireg::new().with_lenpll(true);
-        self.write_reg(reg::Register::FTPRIREG, ftpri.into_bytes()[0]);
-        self.write_reg(reg::Register::RSTHIREG, 0); // not used if no RSSI interrupts
-        self.write_reg(reg::Register::FILCREG, 0); // done by set_modem_config
-        self.write_reg(reg::Register::PFCREG, 0x38); // 100kHz, recommended, but not used, see RH_MRF89_REG_12_SYNCREG OOK only?
+        self.write_reg(reg::Register::FTPRIREG, ftpri.into_bytes()[0])?;
+        self.write_reg(reg::Register::RSTHIREG, 0)?; // not used if no RSSI interrupts
+        self.write_reg(reg::Register::FILCREG, 0)?; // done by set_modem_config
+        self.write_reg(reg::Register::PFCREG, 0x38)?; // 100kHz, recommended, but not used, see RH_MRF89_REG_12_SYNCREG OOK only?
         let syncreg = reg::Syncreg::new()
             .with_syncren(true)
             .with_syncwsz(reg::WordSize::ws_32_bits); // No polyphase, no bsync, sync, 0 errors
-        self.write_reg(reg::Register::SYNCREG, syncreg.into_bytes()[0]);
-        self.write_reg(reg::Register::RSVREG, 0x07); // default
-        self.write_reg(reg::Register::OOKCREG, 0); // done by set_modem_config
-        self.write_reg(reg::Register::SYNCV31REG, 0); // done by set_sync_words
-        self.write_reg(reg::Register::SYNCV23REG, 0); // done by set_sync_words
-        self.write_reg(reg::Register::SYNCV15REG, 0); // done by set_sync_words
-        self.write_reg(reg::Register::SYNCV07REG, 0); // done by set_sync_words
-                                                      // TODO: txipolfv set by set_modem_config() and power set by set_tx_power()
+        self.write_reg(reg::Register::SYNCREG, syncreg.into_bytes()[0])?;
+        self.write_reg(reg::Register::RSVREG, 0x07)?; // default
+        self.write_reg(reg::Register::OOKCREG, 0)?; // done by set_modem_config
+        self.write_reg(reg::Register::SYNCV31REG, 0)?; // done by set_sync_words
+        self.write_reg(reg::Register::SYNCV23REG, 0)?; // done by set_sync_words
+        self.write_reg(reg::Register::SYNCV15REG, 0)?; // done by set_sync_words
+        self.write_reg(reg::Register::SYNCV07REG, 0)?; // done by set_sync_words
+                                                       // TODO: txipolfv set by set_modem_config() and power set by set_tx_power()
         let txconreg = reg::Txconreg::new()
             .with_txopval(reg::TransmitOutputPower::dBm_1)
             .with_txipolfv(reg::Txconreg::compute_txipolfv(200)?);
-        self.write_reg(reg::Register::TXCONREG, txconreg.into_bytes()[0]);
-        self.write_reg(reg::Register::CLKOREG, 0); // Disable clock output to save power
-        self.write_reg(reg::Register::PLOADREG, 0x40); // payload=64bytes (no RX-filtering on packet length)
-        self.write_reg(reg::Register::NADDSREG, 0); // Node Address 0 (default), not used
+        self.write_reg(reg::Register::TXCONREG, txconreg.into_bytes()[0])?;
+        self.write_reg(reg::Register::CLKOREG, 0)?; // Disable clock output to save power
+        self.write_reg(reg::Register::PLOADREG, 0x40)?; // payload=64bytes (no RX-filtering on packet length)
+        self.write_reg(reg::Register::NADDSREG, 0)?; // Node Address 0 (default), not used
         let pktcreg = reg::Pktcreg::new()
             .with_presize(reg::PreambleSize::size_3_bytes)
             .with_chkcrcen(true)
             .with_pktlenf(reg::PacketLenFormat::VariableLength)
             .with_addfil(reg::AddressFiltering::off)
             .with_whiteon(true);
-        self.write_reg(reg::Register::PKTCREG, pktcreg.into_bytes()[0]);
+        self.write_reg(reg::Register::PKTCREG, pktcreg.into_bytes()[0])?;
 
-        self.write_reg(reg::Register::FCRCREG, 0); // default (FIFO access in standby=write, clear FIFO on CRC mismatch)
-                                                   // Set some suitable defaults:
+        self.write_reg(reg::Register::FCRCREG, 0)?; // default (FIFO access in standby=write, clear FIFO on CRC mismatch)
+                                                    // Set some suitable defaults:
         let syncwords = [0x69u8, 0x81, 0x7e, 0x96]; // Same as RH_MRF89XA
         self.set_sync_words(&syncwords)?;
 
@@ -292,28 +287,28 @@ where
                 // Now update the registers
                 let val = self.read_reg(reg::Register::DMODREG)?;
                 let cr = reg::Dmodreg::from_bytes([val]).with_modsel(cfg.modsel.clone());
-                self.write_reg(reg::Register::DMODREG, cr.into_bytes()[0]);
+                self.write_reg(reg::Register::DMODREG, cr.into_bytes()[0])?;
 
-                self.write_reg(reg::Register::FDEVREG, cfg.fdval);
-                self.write_reg(reg::Register::BRSREG, cfg.brval);
-                self.write_reg(reg::Register::FILCREG, cfg.filcreg);
+                self.write_reg(reg::Register::FDEVREG, cfg.fdval)?;
+                self.write_reg(reg::Register::BRSREG, cfg.brval)?;
+                self.write_reg(reg::Register::FILCREG, cfg.filcreg)?;
 
                 // The sample configs in MRF89XA.h all use TXIPOLFV = 0xf0 => 375kHz, which is too wide for most modulations
                 let val = self.read_reg(reg::Register::TXCONREG)?;
                 let txconreg = reg::Txconreg::from_bytes([val])
                     .with_txipolfv(reg::Txconreg::compute_txipolfv(cfg.cut_off_freq)?);
-                self.write_reg(reg::Register::TXCONREG, txconreg.into_bytes()[0]);
+                self.write_reg(reg::Register::TXCONREG, txconreg.into_bytes()[0])?;
                 Ok(())
             }
             None => Err(config::Mrf89Error::PresetNotFound),
         }
     }
 
-    fn set_op_mode(&mut self, op_mode: reg::CMOD) {
+    fn set_op_mode(&mut self, op_mode: reg::CMOD) -> Result<(), Mrf89Error> {
         // REVISIT: do we need to have time delays when switching between modes?
-        let val = self.read_reg(reg::Register::GCONREG).unwrap();
+        let val = self.read_reg(reg::Register::GCONREG)?;
         let cr = reg::Gconreg::from_bytes([val]).with_cmod(op_mode);
-        self.write_reg(reg::Register::GCONREG, cr.into_bytes()[0]);
+        self.write_reg(reg::Register::GCONREG, cr.into_bytes()[0])
     }
 
     /// frequency in kHz
@@ -321,7 +316,7 @@ where
         &mut self,
         frequency: u32,
         mod_type: &reg::ModulationType,
-        delay: &mut dyn DelayMs<u16>,
+        delay: &mut dyn DelayNs,
     ) -> Result<(), Mrf89Error> {
         let r: u8;
         let p: u8;
@@ -342,21 +337,21 @@ where
         // Now set the new register values:
         let val = self.read_reg(reg::Register::GCONREG)?;
         let cr = reg::Gconreg::from_bytes([val]).with_fbs(fbs);
-        self.write_reg(reg::Register::GCONREG, cr.into_bytes()[0]);
-        self.write_reg(reg::Register::R1CREG, r);
-        self.write_reg(reg::Register::P1CREG, p);
-        self.write_reg(reg::Register::S1CREG, s);
+        self.write_reg(reg::Register::GCONREG, cr.into_bytes()[0])?;
+        self.write_reg(reg::Register::R1CREG, r)?;
+        self.write_reg(reg::Register::P1CREG, p)?;
+        self.write_reg(reg::Register::S1CREG, s)?;
 
         self.verify_pll_lock(delay)
     }
 
     /// Verify PLL-lock per instructions in Note 1 section 3.12 "Initialization"
     /// Need to do this after changing frequency.
-    fn verify_pll_lock(&mut self, delay: &mut dyn DelayMs<u16>) -> Result<(), Mrf89Error> {
+    fn verify_pll_lock(&mut self, delay: &mut dyn DelayNs) -> Result<(), Mrf89Error> {
         let val = self.read_reg(reg::Register::FTPRIREG)?;
         let ftpri = reg::Ftprireg::from_bytes([val]).with_lstspll(true); // clear PLL lock bit by writing true
-        self.write_reg(reg::Register::FTPRIREG, ftpri.into_bytes()[0]);
-        self.set_op_mode(reg::CMOD::FS);
+        self.write_reg(reg::Register::FTPRIREG, ftpri.into_bytes()[0])?;
+        self.set_op_mode(reg::CMOD::FS)?;
         const HAS_PLL_LOCK: u8 = 0b0000_0010;
         const MAX_TRIES: u8 = 10;
         let mut ftpri_reg = self.read_reg(reg::Register::FTPRIREG)?;
@@ -369,7 +364,7 @@ where
             }
             delay.delay_ms(100);
         }
-        self.set_op_mode(reg::CMOD::STANDBY);
+        self.set_op_mode(reg::CMOD::STANDBY)?;
         match (ftpri_reg & HAS_PLL_LOCK) != 0 {
             true => Ok(()),
             false => Err(Mrf89Error::NoPllLock),
@@ -388,30 +383,23 @@ where
         0
     }
 
-    fn write_reg(&mut self, reg: Register, value: u8) {
+    fn write_reg(&mut self, reg: Register, value: u8) -> Result<(), Mrf89Error> {
         let reg = reg.addr();
         let bytes = [((reg & 0x1f) << 1), value];
-        critical_section::with(|_crit_sec| {
-            self.cs.set_low().ok();
-            self.spi.write(&bytes).ok();
-            self.cs.set_high().ok();
-        });
+        self.spi
+            .write(&bytes)
+            .map_err(|_| Mrf89Error::SpiTransferError)
     }
 
     fn read_reg(&mut self, reg: Register) -> Result<u8, Mrf89Error> {
         let reg = reg.addr();
         // send register with read mask, and a 0 after to read
         let mut bytes = [((reg & 0x1f) << 1) | SPI_READ, 0];
-        let mut result = Err(Mrf89Error::SpiTransferError);
-        critical_section::with(|_crit_sec| {
-            self.cs.set_low().ok();
-            match self.spi.transfer(&mut bytes) {
-                Ok(data) => result = Ok(data[1]),
-                Err(_) => result = Err(Mrf89Error::SpiTransferError),
-            };
-            self.cs.set_high().ok();
-        });
-        result
+        self.spi
+            .transfer_in_place(&mut bytes)
+            .map_err(|_| Mrf89Error::SpiTransferError)?;
+
+        Ok(bytes[1])
     }
 
     fn set_sync_words(&mut self, sync_words: &[u8]) -> Result<(), Mrf89Error> {
@@ -427,14 +415,14 @@ where
         */
         // TODO: make this a loop depending on sync_words len
         // TODO: verify order of bytes is correct for order of regs
-        self.write_reg(reg::Register::SYNCV31REG, sync_words[0]);
-        self.write_reg(reg::Register::SYNCV23REG, sync_words[1]);
-        self.write_reg(reg::Register::SYNCV15REG, sync_words[2]);
-        self.write_reg(reg::Register::SYNCV07REG, sync_words[3]);
+        self.write_reg(reg::Register::SYNCV31REG, sync_words[0])?;
+        self.write_reg(reg::Register::SYNCV23REG, sync_words[1])?;
+        self.write_reg(reg::Register::SYNCV15REG, sync_words[2])?;
+        self.write_reg(reg::Register::SYNCV07REG, sync_words[3])?;
         Ok(())
     }
 
-    pub fn send(&mut self, data: &[u8], _delay: &mut dyn DelayMs<u16>) -> Result<(), Mrf89Error> {
+    pub fn send(&mut self, data: &[u8], _delay: &mut dyn DelayNs) -> Result<(), Mrf89Error> {
         let len = data.len() as u8;
         if len > config::MRF89_MAX_MSG_LEN {
             return Err(Mrf89Error::MsgTooLong);
@@ -442,10 +430,10 @@ where
 
         //self.wait_packet_sent(); // TODO: Make sure we dont interrupt an outgoing message
         if self.mode == OpMode::Tx {
-            self.set_mode_idle();
+            self.set_mode_idle()?;
             return Err(Mrf89Error::ChannelActive);
         }
-        self.set_mode_idle();
+        self.set_mode_idle()?;
 
         if !self.wait_cad() {
             return Err(Mrf89Error::ChannelActive); // Check channel activity
@@ -461,7 +449,7 @@ where
             self.tx_header.flags,
         ])?;
         self.write_data(data)?;
-        self.set_mode_tx(); // Start transmitting
+        self.set_mode_tx()?; // Start transmitting
 
         Ok(())
     }
@@ -490,32 +478,30 @@ where
     /// checks if there is a message available
     /// not available when in Tx mode of course
     /// not available when the rx-buf is not yet valid
-    pub fn available(&mut self) -> bool {
+    pub fn available(&mut self) -> Result<bool, Mrf89Error> {
         if self.mode == OpMode::Tx {
-            return false;
+            return Ok(false);
         }
         if self.mode == OpMode::Rx {
-            self.set_mode_idle();
-            return false;
+            self.set_mode_idle()?;
+            return Ok(false);
         }
-        self.set_mode_rx();
+        self.set_mode_rx()?;
         // TODO: wait for CRCOK interrupt
-        true
+        Ok(true)
     }
 
     /// spiWriteData
-    fn write_data(&mut self, data: &[u8]) -> Result<u8, Mrf89Error> {
+    fn write_data(&mut self, data: &[u8]) -> Result<(), Mrf89Error> {
         // TODO: implement proper FCRCREG
         let acfcrc = 0x80; // Autoclear FIfO crc bit
-        self.write_reg(reg::Register::FCRCREG, acfcrc);
+        self.write_reg(reg::Register::FCRCREG, acfcrc)?;
 
-        let mut bytes: heapless::Vec<u8, 64> = heapless::Vec::from_slice(data).unwrap();
         let mut result = Err(Mrf89Error::SpiTransferError);
         critical_section::with(|_crit_sec| {
-            self.cs.set_high().ok(); // make sure CS is high
             self.cs_data.set_low().ok();
-            result = match self.spi.transfer(&mut bytes) {
-                Ok(result) => Ok(result[0]),
+            result = match self.spi.write(data) {
+                Ok(_) => Ok(()),
                 Err(_) => Err(Mrf89Error::SpiTransferError),
             };
             self.cs_data.set_high().ok();
@@ -528,15 +514,14 @@ where
         // TODO: implement proper FCRCREG
         let acfcrc = 0x80u8; // Autoclear FIfO crc bit
         let frwaxs = 0x40u8; // ?
-        self.write_reg(reg::Register::FCRCREG, acfcrc | frwaxs); // read from FIFO
+        self.write_reg(reg::Register::FCRCREG, acfcrc | frwaxs)?; // read from FIFO
 
         let mut bytes = [0u8];
         let mut result = Err(Mrf89Error::SpiTransferError);
         critical_section::with(|_crit_sec| {
-            self.cs.set_high().ok(); // make sure CS is high
             self.cs_data.set_low().ok();
-            result = match self.spi.transfer(&mut bytes) {
-                Ok(result) => Ok(result[0]),
+            result = match self.spi.transfer_in_place(&mut bytes) {
+                Ok(_) => Ok(bytes[0]),
                 Err(_) => Err(Mrf89Error::SpiTransferError),
             };
             self.cs_data.set_high().ok();
@@ -551,45 +536,49 @@ where
     }
 
     /// Wait until available or timeout
-    pub fn wait_available_timeout(&mut self, timeout: u16) -> bool {
-        self.set_mode_rx();
+    pub fn wait_available_timeout(&mut self, timeout: u16) -> Result<bool, Mrf89Error> {
+        self.set_mode_rx()?;
         if timeout == 0 {
-            return false;
+            return Ok(false);
         }
         // TODO: implement waiting
-        true
+        Ok(true)
     }
 
-    fn set_mode_idle(&mut self) {
+    fn set_mode_idle(&mut self) -> Result<(), Mrf89Error> {
         info!("enable idle mode");
         if self.mode != OpMode::Idle {
-            self.set_op_mode(reg::CMOD::STANDBY);
+            self.set_op_mode(reg::CMOD::STANDBY)?;
             self.mode = OpMode::Idle;
         }
+        Ok(())
     }
 
-    fn set_mode_tx(&mut self) {
+    fn set_mode_tx(&mut self) -> Result<(), Mrf89Error> {
         info!("enable tx mode");
         if self.mode != OpMode::Tx {
-            self.set_op_mode(reg::CMOD::TRANSMIT);
+            self.set_op_mode(reg::CMOD::TRANSMIT)?;
             self.mode = OpMode::Tx;
         }
+        Ok(())
     }
 
-    fn set_mode_rx(&mut self) {
+    fn set_mode_rx(&mut self) -> Result<(), Mrf89Error> {
         info!("enable rx mode");
         if self.mode != OpMode::Rx {
-            self.set_op_mode(reg::CMOD::RECEIVE);
+            self.set_op_mode(reg::CMOD::RECEIVE)?;
             self.mode = OpMode::Rx;
         }
+        Ok(())
     }
 
     #[allow(dead_code)]
-    fn set_mode_sleep(&mut self) {
+    fn set_mode_sleep(&mut self) -> Result<(), Mrf89Error> {
         if self.mode != OpMode::Sleep {
-            self.set_op_mode(reg::CMOD::SLEEP);
+            self.set_op_mode(reg::CMOD::SLEEP)?;
             self.mode = OpMode::Sleep;
         }
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -632,7 +621,7 @@ where
                         info!("opmode TX TXDONE");
                         // IRQ1 when transmitting means TXDONE
                         self.tx_good += 1;
-                        self.set_mode_idle();
+                        self.set_mode_idle()?;
                         // TODO: weird to go to RX mode right after sending??
                         //       definitely not power-efficient
                         // self.set_mode_rx();
@@ -647,7 +636,7 @@ where
                         // based roughly on Figure 3-9
                         // TODO: make RSSI accessible in API
                         // 4. Go to Standby mode
-                        self.set_mode_idle();
+                        self.set_mode_idle()?;
                         self.last_rssi = self.read_reg(Register::RSTSREG)?;
 
                         self.rx_good += 1;
@@ -691,7 +680,7 @@ where
                         }
                         // All good. See if its for us
                         if self.validate_rx_buf() {
-                            self.set_mode_idle();
+                            self.set_mode_idle()?;
                         } else {
                             self.clear_rx_buf();
                             return Err(Mrf89Error::MsgNotForUs);
@@ -700,7 +689,7 @@ where
                     OpMode::Cad => {
                         info!("Opmode CAD");
                         self.rx_good += 1;
-                        self.set_mode_idle();
+                        self.set_mode_idle()?;
                     }
                     OpMode::Initialising => {
                         info!("Opmode initialising");

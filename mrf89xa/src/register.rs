@@ -44,6 +44,7 @@ pub enum Register {
     NADDSREG = 0x1d,
     PKTCREG = 0x1e,
     FCRCREG = 0x1f,
+    Unknown,
 }
 
 impl Register {
@@ -86,7 +87,7 @@ impl Register {
             0x1d => Self::NADDSREG,
             0x1e => Self::PKTCREG,
             0x1f => Self::FCRCREG,
-            _ => panic!(),
+            _ => Self::Unknown,
         }
     }
 }
@@ -135,10 +136,10 @@ impl FBS {
 #[derive(BitfieldSpecifier)]
 #[bits = 2]
 pub enum VCOT {
-    VCOT_180MV = 0b11,
-    VCOT_120MV = 0b10,
-    VCOT_60MV = 0b01,
-    VCOT_TANK = 0b00, //  Vtune determined by tank inductors values (default)
+    V_180MV = 0b11,
+    V_120MV = 0b10,
+    V_60MV = 0b01,
+    V_TANK = 0b00, //  Vtune determined by tank inductors values (default)
 }
 
 #[bitfield]
@@ -534,7 +535,7 @@ mod tests {
         let cr = Gconreg::new()
             .with_cmod(CMOD::TRANSMIT)
             .with_fbs(FBS::FBS_863_870_OR_950_960)
-            .with_vcot(VCOT::VCOT_60MV)
+            .with_vcot(VCOT::V_60MV)
             .with_rps(false);
         assert_eq!(cr.into_bytes(), [0b10010010]);
     }

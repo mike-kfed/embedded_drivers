@@ -5,9 +5,25 @@ authors = ["Michael Kefeder <m.kefeder@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-embedded-hal = { version = "0.2.7", features = ["unproven"] }
+embedded-hal = { version = "1.0.0" }
 modular-bitfield = "0.11.2"
 ufmt = "0.2.0"
 heapless = { version = "0.7.16", features = ["ufmt-impl"] }
 critical-section = "1.1.2"
 defmt = "0.3.8"
+
+# see .clippy.toml for config variables
+[lints.clippy]
+unwrap_used = "deny"
+unwrap_in_result = "deny"
+panic = "deny"
+expect_used = "deny"
+unimplemented = "deny"
+suspicious = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+
+[lints.rust]
+warnings = "deny"
+unsafe_code = "forbid"

@@ -46,6 +46,12 @@ impl Config {
     }
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct MsgHeader {
     pub to: u8,
     pub from: u8,
